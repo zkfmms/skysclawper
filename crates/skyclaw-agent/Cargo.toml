@@ -8,6 +8,7 @@ description = "Agent runtime for SkyClaw"
 
 [dependencies]
 skyclaw-core.workspace = true
+skyclaw-vault.workspace = true
 tokio.workspace = true
 futures.workspace = true
 tracing.workspace = true

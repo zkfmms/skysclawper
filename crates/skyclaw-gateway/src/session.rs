@@ -6,10 +6,18 @@ use tokio::sync::RwLock;
 
 use skyclaw_core::types::session::SessionContext;
 
+/// Maximum number of concurrent sessions before LRU eviction.
+const MAX_SESSIONS: usize = 1000;
+
+/// Maximum number of messages in a single session's conversation history.
+const MAX_HISTORY_PER_SESSION: usize = 200;
+
 /// Thread-safe session manager backed by an in-memory HashMap.
 #[derive(Clone)]
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, SessionContext>>>,
+    /// Tracks access order for LRU eviction (most recent at the back).
+    access_order: Arc<RwLock<Vec<String>>>,
 }
 
 impl SessionManager {
@@ -17,6 +25,7 @@ impl SessionManager {
     pub fn new() -> Self {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            access_order: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
@@ -26,6 +35,10 @@ impl SessionManager {
     }
 
     /// Get an existing session or create a new one for the given channel/chat/user.
+    ///
+    /// Enforces `MAX_SESSIONS` by evicting the least-recently-used session
+    /// when the limit is reached, and `MAX_HISTORY_PER_SESSION` by truncating
+    /// old messages from the conversation history.
     pub async fn get_or_create_session(
         &self,
         channel: &str,
@@ -37,8 +50,11 @@ impl SessionManager {
         // Fast path: read lock
         {
             let sessions = self.sessions.read().await;
-            if let Some(session) = sessions.get(&key) {
-                return session.clone();
+            if sessions.contains_key(&key) {
+                let session = sessions.get(&key).cloned().unwrap();
+                drop(sessions);
+                self.touch_access_order(&key).await;
+                return session;
             }
         }
 
@@ -47,27 +63,70 @@ impl SessionManager {
 
         // Double-check after acquiring write lock
         if let Some(session) = sessions.get(&key) {
-            return session.clone();
+            let session = session.clone();
+            drop(sessions);
+            self.touch_access_order(&key).await;
+            return session;
         }
 
-        let session = SessionContext {
-            session_id: key.clone(),
+        // Evict oldest sessions if at capacity
+        if sessions.len() >= MAX_SESSIONS {
+            let mut order = self.access_order.write().await;
+            while sessions.len() >= MAX_SESSIONS && !order.is_empty() {
+                let evict_key = order.remove(0);
+                sessions.remove(&evict_key);
+                tracing::debug!(session = %evict_key, "Evicted LRU session (limit: {})", MAX_SESSIONS);
+            }
+        }
+
+        let session = self.make_session(channel, chat_id, user_id, &key);
+
+        sessions.insert(key.clone(), session.clone());
+        drop(sessions);
+
+        let mut order = self.access_order.write().await;
+        order.push(key);
+
+        session
+    }
+
+    /// Create a new SessionContext.
+    fn make_session(&self, channel: &str, chat_id: &str, user_id: &str, key: &str) -> SessionContext {
+        SessionContext {
+            session_id: key.to_string(),
             channel: channel.to_string(),
             chat_id: chat_id.to_string(),
             user_id: user_id.to_string(),
             history: Vec::new(),
             workspace_path: std::env::current_dir().unwrap_or_else(|_| "/tmp".into()),
-        };
+        }
+    }
 
-        sessions.insert(key, session.clone());
-        session
+    /// Update access order for LRU tracking.
+    async fn touch_access_order(&self, key: &str) {
+        let mut order = self.access_order.write().await;
+        order.retain(|k| k != key);
+        order.push(key.to_string());
     }
 
     /// Update a session in the store (e.g., after history changes).
-    pub async fn update_session(&self, session: SessionContext) {
+    ///
+    /// Truncates conversation history to `MAX_HISTORY_PER_SESSION` messages,
+    /// keeping the most recent ones.
+    pub async fn update_session(&self, mut session: SessionContext) {
         let key = Self::session_key(&session.channel, &session.chat_id, &session.user_id);
+
+        // Truncate history if it exceeds the limit
+        if session.history.len() > MAX_HISTORY_PER_SESSION {
+            let drain_count = session.history.len() - MAX_HISTORY_PER_SESSION;
+            session.history.drain(..drain_count);
+        }
+
         let mut sessions = self.sessions.write().await;
-        sessions.insert(key, session);
+        sessions.insert(key.clone(), session);
+        drop(sessions);
+
+        self.touch_access_order(&key).await;
     }
 
     /// Remove a session from the store.
@@ -75,6 +134,10 @@ impl SessionManager {
         let key = Self::session_key(channel, chat_id, user_id);
         let mut sessions = self.sessions.write().await;
         sessions.remove(&key);
+        drop(sessions);
+
+        let mut order = self.access_order.write().await;
+        order.retain(|k| k != &key);
     }
 
     /// Get the number of active sessions.

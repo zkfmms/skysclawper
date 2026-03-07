@@ -51,6 +51,7 @@ poise = "0.6"
 
 # Crypto
 chacha20poly1305 = "0.10"
+zeroize = { version = "1", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["serde"] }
 rand = "0.8"
 

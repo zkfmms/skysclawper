@@ -78,12 +78,30 @@ impl Default for GatewayConfig {
 fn default_host() -> String { "127.0.0.1".to_string() }
 fn default_port() -> u16 { 8080 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Clone, Serialize, Deserialize, Default)]
 pub struct ProviderConfig {
     pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("name", &self.name)
+            .field("api_key", &self.api_key.as_ref().map(|k| {
+                if k.len() > 8 {
+                    format!("{}...{}", &k[..4], &k[k.len()-4..])
+                } else {
+                    "***".to_string()
+                }
+            }))
+            .field("model", &self.model)
+            .field("base_url", &self.base_url)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

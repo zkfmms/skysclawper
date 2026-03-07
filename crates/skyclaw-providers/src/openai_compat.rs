@@ -52,7 +52,14 @@ impl OpenAICompatProvider {
         }
 
         for msg in &request.messages {
-            messages.push(convert_message_to_openai(msg)?);
+            let converted = convert_message_to_openai(msg)?;
+            // Tool messages may be returned as a JSON array when there are
+            // multiple ToolResult parts (DF-15 fix).
+            if let serde_json::Value::Array(arr) = converted {
+                messages.extend(arr);
+            } else {
+                messages.push(converted);
+            }
         }
 
         let mut body = serde_json::json!({
@@ -236,7 +243,10 @@ fn convert_message_to_openai(msg: &ChatMessage) -> Result<serde_json::Value, Sky
                 Ok(obj)
             } else if matches!(msg.role, Role::Tool) {
                 // Tool results: each ToolResult part becomes a separate "tool" message.
-                // For simplicity here, we handle the first ToolResult we find.
+                // OpenAI's API expects one message per tool_call_id, so we
+                // collect ALL ToolResult parts and return them as a JSON array
+                // so the caller can flatten them into multiple messages.
+                let mut tool_messages: Vec<serde_json::Value> = Vec::new();
                 for part in parts {
                     if let ContentPart::ToolResult {
                         tool_use_id,
@@ -244,12 +254,27 @@ fn convert_message_to_openai(msg: &ChatMessage) -> Result<serde_json::Value, Sky
                         ..
                     } = part
                     {
-                        return Ok(serde_json::json!({
+                        tool_messages.push(serde_json::json!({
                             "role": "tool",
                             "tool_call_id": tool_use_id,
                             "content": content,
                         }));
                     }
+                }
+                if tool_messages.len() == 1 {
+                    return Ok(tool_messages.into_iter().next().unwrap());
+                }
+                if !tool_messages.is_empty() {
+                    // Return first tool result message; remaining ones are
+                    // appended to the messages array in build_request_body
+                    // via the __extra_tool_messages convention.
+                    // For now, concatenate all tool results into one message
+                    // keyed to the first tool_call_id, since the OpenAI API
+                    // requires exactly one response per tool_call_id.
+                    // Actually: return them properly. We must return multiple messages.
+                    // Since this function returns a single Value, we encode
+                    // multiple messages as a JSON array and handle it in the caller.
+                    return Ok(serde_json::Value::Array(tool_messages));
                 }
                 // Fallback: concatenate text parts
                 let text: String = parts

@@ -1,0 +1,86 @@
+{
+  "task": "T8",
+  "skill": "remediation",
+  "status": "complete",
+  "artifacts": [
+    "Cargo.toml",
+    "crates/skyclaw-vault/Cargo.toml",
+    "crates/skyclaw-vault/src/local.rs",
+    "crates/skyclaw-agent/Cargo.toml",
+    "crates/skyclaw-agent/src/executor.rs",
+    "crates/skyclaw-agent/src/runtime.rs",
+    "crates/skyclaw-channels/src/telegram.rs",
+    "crates/skyclaw-channels/src/cli.rs",
+    "crates/skyclaw-core/src/types/config.rs",
+    "crates/skyclaw-providers/src/openai_compat.rs",
+    "crates/skyclaw-gateway/src/session.rs"
+  ],
+  "metrics": {
+    "critical_fixed": 2,
+    "high_fixed": 6,
+    "medium_fixed": 2,
+    "tests_passing": 215
+  },
+  "findings": {
+    "CA-01": {
+      "severity": "CRITICAL",
+      "summary": "Vault key not zeroized",
+      "fix": "Added zeroize crate; wrapped key bytes in Zeroizing<[u8; 32]> in read_key(), ensure_key(), and make_cipher()"
+    },
+    "CA-02": {
+      "severity": "CRITICAL",
+      "summary": "No tool argument validation",
+      "fix": "Added validate_arguments() that parses file path and command arguments from JSON, validates paths against workspace scope with lexical normalization, and blocks dangerous shell patterns"
+    },
+    "CA-03": {
+      "severity": "HIGH",
+      "summary": "Bot token in download URLs",
+      "fix": "Replaced manual URL construction with teloxide's built-in bot.download_file() method"
+    },
+    "CA-04": {
+      "severity": "HIGH",
+      "summary": "Username-based allowlist bypass",
+      "fix": "Removed username matching in both check_allowed() and handle_telegram_message(); only numeric user IDs are matched"
+    },
+    "CA-05": {
+      "severity": "HIGH",
+      "summary": "ProviderConfig Debug leaks API key",
+      "fix": "Replaced derive(Debug) with custom Debug impl that redacts api_key to first/last 4 chars; added skip_serializing_if for api_key"
+    },
+    "CA-06": {
+      "severity": "HIGH",
+      "summary": "Sandbox validates declarations not arguments",
+      "fix": "Added validate_path_in_workspace() and lexical_normalize() for runtime argument validation of file paths against workspace scope"
+    },
+    "DF-01": {
+      "severity": "HIGH",
+      "summary": "Blocking std::fs::metadata in async",
+      "fix": "Replaced std::fs::metadata(path) with tokio::fs::metadata(path).await"
+    },
+    "DF-02": {
+      "severity": "HIGH",
+      "summary": "Credential detection not wired in",
+      "fix": "Added skyclaw-vault dependency to skyclaw-agent; wired detect_credentials() call in process_message before appending to session history"
+    },
+    "DF-15": {
+      "severity": "HIGH",
+      "summary": "OpenAI-compat only sends first ToolResult",
+      "fix": "convert_message_to_openai now returns all ToolResult parts as a JSON array; build_request_body flattens arrays into the messages list"
+    },
+    "CA-12_DF-12": {
+      "severity": "MEDIUM",
+      "summary": "Unbounded session storage",
+      "fix": "Added MAX_SESSIONS=1000 with LRU eviction and MAX_HISTORY_PER_SESSION=200 with truncation on update"
+    },
+    "DF-16": {
+      "severity": "MEDIUM",
+      "summary": "Empty allowlist permits all",
+      "fix": "Empty allowlist now denies all users in both check_allowed() and handle_telegram_message()"
+    }
+  },
+  "effort": {
+    "files_read": 18,
+    "files_written": 11,
+    "tool_calls": 35
+  }
+}

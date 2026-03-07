@@ -86,7 +86,7 @@ impl Channel for CliChannel {
                                     file_id: path.to_string_lossy().to_string(),
                                     file_name: path.file_name().map(|n| n.to_string_lossy().to_string()),
                                     mime_type: None,
-                                    size: std::fs::metadata(path).ok().map(|m| m.len() as usize),
+                                    size: tokio::fs::metadata(path).await.ok().map(|m| m.len() as usize),
                                 };
                                 (Some(format!("[file: {}]", path.display())), vec![att])
                             } else {

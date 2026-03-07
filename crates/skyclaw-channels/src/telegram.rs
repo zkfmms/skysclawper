@@ -12,6 +12,7 @@ use skyclaw_core::types::message::{AttachmentRef, InboundMessage, OutboundMessag
 use skyclaw_core::{Channel, FileTransfer};
 
 use teloxide::prelude::*;
+use teloxide::net::Download;
 use teloxide::types::{InputFile, MessageKind, MediaKind};
 
 /// Maximum file size the Telegram Bot API supports for uploads (50 MB).
@@ -62,20 +63,16 @@ impl TelegramChannel {
         self.rx.take()
     }
 
-    /// Check if a user (by numeric ID or username) is on the allowlist.
-    fn check_allowed(&self, user_id: &str, username: Option<&str>) -> bool {
+    /// Check if a user (by numeric ID) is on the allowlist.
+    ///
+    /// Only numeric user IDs are matched. Usernames are ignored because
+    /// they can be changed, enabling allowlist bypass (CA-04).
+    /// An empty allowlist denies all users (DF-16).
+    fn check_allowed(&self, user_id: &str, _username: Option<&str>) -> bool {
         if self.allowlist.is_empty() {
-            return true;
+            return false;
         }
-        if self.allowlist.iter().any(|a| a == user_id) {
-            return true;
-        }
-        if let Some(uname) = username {
-            if self.allowlist.iter().any(|a| a == uname || a.trim_start_matches('@') == uname) {
-                return true;
-            }
-        }
-        false
+        self.allowlist.iter().any(|a| a == user_id)
     }
 }
 
@@ -185,19 +182,14 @@ impl FileTransfer for TelegramChannel {
                 SkyclawError::FileTransfer(format!("Failed to get file info: {e}"))
             })?;
 
-            // Build the download URL
-            let url = format!(
-                "https://api.telegram.org/file/bot{}/{}",
-                self.token, tg_file.path
-            );
-
-            let response = reqwest::get(&url).await.map_err(|e| {
+            // Use teloxide's built-in download to avoid exposing the bot
+            // token in a manually-constructed URL (CA-03).
+            let mut buf = Vec::new();
+            bot.download_file(&tg_file.path, &mut buf).await.map_err(|e| {
                 SkyclawError::FileTransfer(format!("Failed to download file: {e}"))
             })?;
 
-            let data = response.bytes().await.map_err(|e| {
-                SkyclawError::FileTransfer(format!("Failed to read file bytes: {e}"))
-            })?;
+            let data = bytes::Bytes::from(buf);
 
             let name = att
                 .file_name
@@ -284,12 +276,14 @@ async fn handle_telegram_message(
 
     let username = user.and_then(|u| u.username.clone());
 
-    // Allowlist check
-    if !allowlist.is_empty() {
-        let allowed = allowlist.iter().any(|a| a == &user_id)
-            || username.as_ref().map_or(false, |uname| {
-                allowlist.iter().any(|a| a == uname || a.trim_start_matches('@') == uname)
-            });
+    // Allowlist check: only match on numeric user ID (CA-04).
+    // Empty allowlist denies all users (DF-16).
+    {
+        let allowed = if allowlist.is_empty() {
+            false
+        } else {
+            allowlist.iter().any(|a| a == &user_id)
+        };
         if !allowed {
             tracing::warn!(user_id = %user_id, username = ?username, "Rejected message from non-allowlisted user");
             return Ok(());

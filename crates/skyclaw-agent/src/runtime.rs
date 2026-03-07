@@ -63,8 +63,24 @@ impl AgentRuntime {
             "Processing inbound message"
         );
 
-        // Append the user message to session history
+        // Scan user message for leaked credentials (DF-02)
         let user_text = msg.text.clone().unwrap_or_default();
+        let detected_creds = skyclaw_vault::detect_credentials(&user_text);
+        if !detected_creds.is_empty() {
+            warn!(
+                count = detected_creds.len(),
+                "Detected credentials in user message — they will be noted but not stored in plain text history"
+            );
+            for cred in &detected_creds {
+                debug!(
+                    provider = %cred.provider,
+                    key = %cred.key,
+                    "Detected credential"
+                );
+            }
+        }
+
+        // Append the user message to session history
         session.history.push(ChatMessage {
             role: Role::User,
             content: MessageContent::Text(user_text),

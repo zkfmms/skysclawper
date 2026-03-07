@@ -8,6 +8,20 @@ use skyclaw_core::types::error::SkyclawError;
 use skyclaw_core::types::session::SessionContext;
 use tracing::{info, warn};
 
+/// Dangerous shell command patterns that should be rejected.
+const BLOCKED_SHELL_PATTERNS: &[&str] = &[
+    "rm -rf /",
+    "mkfs.",
+    "dd if=",
+    "> /dev/sd",
+    "chmod -R 777 /",
+    ":(){ :|:",    // fork bomb
+    "curl | sh",
+    "curl | bash",
+    "wget | sh",
+    "wget | bash",
+];
+
 /// Execute a tool call, validating sandbox constraints first.
 pub async fn execute_tool(
     tool_name: &str,
@@ -25,6 +39,9 @@ pub async fn execute_tool(
 
     // Validate sandbox declarations against workspace scope
     validate_sandbox(tool.as_ref(), session)?;
+
+    // Validate runtime arguments against workspace scope (CA-02 / CA-06)
+    validate_arguments(tool_name, &arguments, session)?;
 
     let ctx = ToolContext {
         workspace_path: session.workspace_path.clone(),
@@ -50,6 +67,121 @@ pub async fn execute_tool(
             Err(e)
         }
     }
+}
+
+/// Validate runtime arguments from the tool call's JSON against workspace scope.
+///
+/// This catches path traversal and out-of-scope file access in the actual
+/// arguments the LLM provides at call time, not just the static declarations.
+fn validate_arguments(
+    tool_name: &str,
+    arguments: &serde_json::Value,
+    session: &SessionContext,
+) -> Result<(), SkyclawError> {
+    // Validate file path arguments
+    let path_keys = ["path", "file", "file_path", "directory", "dir", "target", "destination", "src", "dest"];
+    if let serde_json::Value::Object(map) = arguments {
+        for key in &path_keys {
+            if let Some(serde_json::Value::String(path_str)) = map.get(*key) {
+                validate_path_in_workspace(tool_name, path_str, session)?;
+            }
+        }
+
+        // Validate shell/command arguments for dangerous patterns
+        if let Some(serde_json::Value::String(cmd)) = map.get("command") {
+            validate_shell_command(tool_name, cmd)?;
+        }
+        if let Some(serde_json::Value::String(cmd)) = map.get("cmd") {
+            validate_shell_command(tool_name, cmd)?;
+        }
+    }
+
+    Ok(())
+}
+
+/// Validate that a file path argument resolves to within the workspace.
+fn validate_path_in_workspace(
+    tool_name: &str,
+    path_str: &str,
+    session: &SessionContext,
+) -> Result<(), SkyclawError> {
+    let path = std::path::Path::new(path_str);
+    let workspace = &session.workspace_path;
+
+    let abs_path = if path.is_relative() {
+        workspace.join(path)
+    } else {
+        path.to_path_buf()
+    };
+
+    let workspace_canonical = workspace
+        .canonicalize()
+        .unwrap_or_else(|_| workspace.clone());
+
+    // For existing paths, canonicalize to resolve symlinks and ..
+    // For non-existent paths, reject them if they can't be validated
+    let path_canonical = match abs_path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            // Path does not exist yet; do lexical normalization to catch traversal
+            let normalized = lexical_normalize(&abs_path);
+            if !normalized.starts_with(&workspace_canonical) {
+                return Err(SkyclawError::SandboxViolation(format!(
+                    "Tool '{}' argument path '{}' escapes workspace '{}'",
+                    tool_name,
+                    path_str,
+                    workspace.display()
+                )));
+            }
+            return Ok(());
+        }
+    };
+
+    if !path_canonical.starts_with(&workspace_canonical) {
+        return Err(SkyclawError::SandboxViolation(format!(
+            "Tool '{}' argument path '{}' is outside workspace '{}'",
+            tool_name,
+            path_str,
+            workspace.display()
+        )));
+    }
+
+    Ok(())
+}
+
+/// Lexically normalize a path by resolving `.` and `..` components without I/O.
+fn lexical_normalize(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut parts = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                // Only pop if there's a Normal component to pop
+                if parts.last().map_or(false, |c| matches!(c, Component::Normal(_))) {
+                    parts.pop();
+                } else {
+                    parts.push(component);
+                }
+            }
+            Component::CurDir => {} // skip
+            _ => parts.push(component),
+        }
+    }
+    parts.iter().collect()
+}
+
+/// Validate that a shell command does not contain dangerous patterns.
+fn validate_shell_command(tool_name: &str, command: &str) -> Result<(), SkyclawError> {
+    let lower = command.to_lowercase();
+    for pattern in BLOCKED_SHELL_PATTERNS {
+        if lower.contains(pattern) {
+            return Err(SkyclawError::SandboxViolation(format!(
+                "Tool '{}' command contains blocked pattern: '{}'",
+                tool_name, pattern
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Validate that a tool's declared resource access is within the session's workspace scope.

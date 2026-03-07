@@ -12,6 +12,7 @@ use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::{debug, warn};
+use zeroize::Zeroizing;
 
 use skyclaw_core::Vault;
 use skyclaw_core::types::error::SkyclawError;
@@ -82,10 +83,10 @@ impl LocalVault {
             return Ok(());
         }
 
-        let mut key_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut key_bytes);
+        let mut key_bytes = Zeroizing::new([0u8; 32]);
+        OsRng.fill_bytes(key_bytes.as_mut());
 
-        tokio::fs::write(&self.key_path, &key_bytes).await.map_err(|e| {
+        tokio::fs::write(&self.key_path, key_bytes.as_ref()).await.map_err(|e| {
             SkyclawError::Vault(format!("failed to write vault key: {e}"))
         })?;
 
@@ -102,7 +103,10 @@ impl LocalVault {
     }
 
     /// Read the raw 32-byte key from disk.
-    async fn read_key(&self) -> Result<[u8; 32], SkyclawError> {
+    ///
+    /// The returned key is wrapped in `Zeroizing` so it is automatically
+    /// zeroized when dropped, preventing key material from lingering in memory.
+    async fn read_key(&self) -> Result<Zeroizing<[u8; 32]>, SkyclawError> {
         let bytes = tokio::fs::read(&self.key_path).await.map_err(|e| {
             SkyclawError::Vault(format!("failed to read vault key: {e}"))
         })?;
@@ -111,13 +115,13 @@ impl LocalVault {
             SkyclawError::Vault("vault key must be exactly 32 bytes".into())
         })?;
 
-        Ok(key)
+        Ok(Zeroizing::new(key))
     }
 
     // ── Encryption helpers ──────────────────────────────────────────────
 
-    fn make_cipher(key: &[u8; 32]) -> ChaCha20Poly1305 {
-        ChaCha20Poly1305::new(key.into())
+    fn make_cipher(key: &Zeroizing<[u8; 32]>) -> ChaCha20Poly1305 {
+        ChaCha20Poly1305::new(key.as_ref().into())
     }
 
     fn encrypt(cipher: &ChaCha20Poly1305, plaintext: &[u8]) -> Result<(Vec<u8>, [u8; 12]), SkyclawError> {
