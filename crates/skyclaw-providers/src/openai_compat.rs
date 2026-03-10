@@ -306,14 +306,19 @@ fn convert_message_to_openai(msg: &ChatMessage) -> Result<serde_json::Value, Sky
                     if let ContentPart::ToolResult {
                         tool_use_id,
                         content,
+                        name,
                         ..
                     } = part
                     {
-                        tool_messages.push(serde_json::json!({
+                        let mut msg = serde_json::json!({
                             "role": "tool",
                             "tool_call_id": tool_use_id,
                             "content": content,
-                        }));
+                        });
+                        if let Some(n) = name {
+                            msg.as_object_mut().unwrap().insert("name".to_string(), serde_json::json!(n));
+                        }
+                        tool_messages.push(msg);
                     }
                 }
                 if tool_messages.len() == 1 {
@@ -890,6 +895,7 @@ mod tests {
                 tool_use_id: "call_1".to_string(),
                 content: "file.txt".to_string(),
                 is_error: false,
+                name: Some("read_file".to_string()),
             }]),
         };
         let json = convert_message_to_openai(&msg).unwrap();

@@ -601,6 +601,7 @@ impl AgentRuntime {
                     tool_use_id: tool_use_id.clone(),
                     content,
                     is_error,
+                    name: Some(tool_name.clone()),
                 });
             }
 

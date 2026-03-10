@@ -89,6 +89,8 @@ pub enum ContentPart {
         tool_use_id: String,
         content: String,
         is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
     },
     #[serde(rename = "image")]
     Image { media_type: String, data: String },
