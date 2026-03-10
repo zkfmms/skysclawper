@@ -663,6 +663,19 @@ Never silently save or delete memories.";
 fn build_system_prompt() -> String {
     let mut prompt = SYSTEM_PROMPT_BASE.to_string();
 
+    // ── Load Persona (SOUL.md) ────────────────────────────────
+    let workspace_path = dirs::home_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join(".skyclaw")
+        .join("workspace");
+    let soul_path = workspace_path.join("SOUL.md");
+    
+    if let Ok(soul_content) = std::fs::read_to_string(&soul_path) {
+        prompt.push_str("\n\n==== IDENTITY & PERSONA ====\n");
+        prompt.push_str(&soul_content);
+        prompt.push_str("\n===========================\n");
+    }
+
     // ── Provider/model context ────────────────────────────────
     prompt.push_str("\n\nSUPPORTED PROVIDERS & DEFAULT MODELS:\n");
     prompt.push_str("- anthropic: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-6\n");
