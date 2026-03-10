@@ -12,6 +12,7 @@ mod send_message;
 mod shell;
 mod usage_audit;
 mod web_fetch;
+mod web_search;
 
 #[cfg(feature = "browser")]
 pub use browser::BrowserTool;
@@ -25,6 +26,7 @@ pub use send_message::SendMessageTool;
 pub use shell::ShellTool;
 pub use usage_audit::UsageAuditTool;
 pub use web_fetch::WebFetchTool;
+pub use web_search::WebSearchTool;
 
 use skyclaw_core::types::config::ToolsConfig;
 use skyclaw_core::{Channel, Memory, SetupLinkGenerator, Tool, UsageStore};
@@ -61,6 +63,10 @@ pub fn create_tools(
 
     if config.http {
         tools.push(Arc::new(WebFetchTool::new()));
+    }
+
+    if config.search {
+        tools.push(Arc::new(WebSearchTool::new()));
     }
 
     // Add channel-dependent tools

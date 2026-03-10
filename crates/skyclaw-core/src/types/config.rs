@@ -420,6 +420,8 @@ pub struct ToolsConfig {
     pub cron: bool,
     #[serde(default = "default_true")]
     pub http: bool,
+    #[serde(default = "default_true")]
+    pub search: bool,
     /// Browser idle timeout in seconds before auto-close (default: 300).
     /// Increased from 120s to support authenticated sessions that take longer.
     #[serde(default = "default_browser_timeout_secs")]
@@ -435,6 +437,7 @@ impl Default for ToolsConfig {
             git: true,
             cron: true,
             http: true,
+            search: true,
             browser_timeout_secs: 300,
         }
     }
