@@ -578,34 +578,35 @@ fn load_active_provider_keys() -> Option<(String, Vec<String>, String, Option<St
 /// Build the onboarding welcome message with a pre-generated setup link.
 fn onboarding_message_with_link(setup_link: &str) -> String {
     format!(
-        "Welcome to SkyClaw!\n\n\
-         To get started, open this secure setup link:\n\
+        "Welcome to SkyClaw! (Skysclawper v.0.01)\n\n\
+         まずはじめに、セキュリティ保護された以下のセットアップリンクを開いてください:\n\
          {}\n\n\
-         Paste your API key in the form, copy the encrypted blob, \
-         and send it back here.\n\n\
-         Or just paste your API key directly below — \
-         I'll auto-detect the provider and get you online.\n\n\
-         You can add more keys later with /addkey, \
-         list them with /keys, or remove with /removekey.",
+         フォームにAPIキーを入力し、生成された暗号化Blobをコピーして、\
+         ここに返信してください。\n\n\
+         または、APIキーを直接ここに貼り付けるだけでも構いません。\
+         自動的にプロバイダーを検出し、オンラインにします。\n\n\
+         後から /addkey でキーを追加したり、\
+         /keys で一覧表示、/removekey で削除も可能です。\n\n\
+         (Note: SNS運用の場合、ここでアカウント登録を行うことも可能です。)",
         setup_link
     )
 }
 
 const ONBOARDING_REFERENCE: &str = "\
-Supported formats:\n\n\
-1\u{fe0f}\u{20e3} Auto-detect (just paste the key):\n\
+対応フォーマット:\n\n\
+1\u{fe0f}\u{20e3} 自動検出 (キーを貼り付けるだけ):\n\
 sk-ant-...     \u{2192} Anthropic\n\
 sk-...         \u{2192} OpenAI\n\
 AIzaSy...      \u{2192} Gemini\n\
 xai-...        \u{2192} Grok\n\
 sk-or-...      \u{2192} OpenRouter\n\n\
-2\u{fe0f}\u{20e3} Explicit (for keys without unique prefix):\n\
+2\u{fe0f}\u{20e3} 明示的指定 (プレフィックスがないキー):\n\
 minimax:YOUR_KEY\n\
 openrouter:YOUR_KEY\n\
 ollama:YOUR_KEY\n\n\
-3\u{fe0f}\u{20e3} Proxy / custom endpoint:\n\
+3\u{fe0f}\u{20e3} プロキシ / カスタムエンドポイント:\n\
 proxy <provider> <base_url> <api_key>\n\n\
-Example:\n\
+例:\n\
 proxy openai https://my-proxy.com/v1 sk-xxx\n\
 proxy anthropic https://gateway.ai/v1/anthropic sk-ant-xxx\n\
 proxy ollama https://ollama.com/v1 your-ollama-key";
