@@ -232,6 +232,7 @@ fn convert_message_to_anthropic(msg: &ChatMessage) -> Result<serde_json::Value, 
                         tool_use_id,
                         content,
                         is_error,
+                        ..
                     } => serde_json::json!({
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
