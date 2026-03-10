@@ -394,12 +394,12 @@ fn default_model(provider_name: &str) -> &'static str {
     match provider_name {
         "anthropic" => "claude-sonnet-4-6",
         "openai" => "gpt-5.2",
-        "gemini" => "gemini-2.5-flash",
+        "gemini" | "google" => "gemini-2.5-flash-lite",
         "grok" | "xai" => "grok-4-1-fast-non-reasoning",
         "openrouter" => "anthropic/claude-sonnet-4-6",
         "minimax" => "MiniMax-M2.5",
         "ollama" => "llama3.3",
-        _ => "claude-sonnet-4-6",
+        _ => "gemini-2.5-flash-lite",
     }
 }
 
@@ -1081,7 +1081,14 @@ async fn main() -> Result<()> {
             // ── Resolve API credentials ────────────────────────
             // Priority: config file > saved credentials > onboarding
             let credentials: Option<(String, String, String)> = {
-                if let Some(ref key) = config.provider.api_key {
+                if let Some(ref raw_key) = config.provider.api_key {
+                    let key = if raw_key.starts_with("${") && raw_key.ends_with('}') {
+                        let var_name = &raw_key[2..raw_key.len()-1];
+                        std::env::var(var_name).unwrap_or_else(|_| raw_key.clone())
+                    } else {
+                        raw_key.clone()
+                    };
+
                     if !key.is_empty() && !key.starts_with("${") {
                         let name = config
                             .provider
@@ -1093,7 +1100,7 @@ async fn main() -> Result<()> {
                             .model
                             .clone()
                             .unwrap_or_else(|| default_model(&name).to_string());
-                        Some((name, key.clone(), model))
+                        Some((name, key, model))
                     } else {
                         load_saved_credentials()
                     }

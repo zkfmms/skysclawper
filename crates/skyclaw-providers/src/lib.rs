@@ -49,7 +49,7 @@ pub fn create_provider(config: &ProviderConfig) -> Result<Box<dyn Provider>, Sky
             }
             Ok(Box::new(provider))
         }
-        "gemini" => {
+        "gemini" | "google" => {
             let base_url = config.base_url.clone().unwrap_or_else(|| {
                 "https://generativelanguage.googleapis.com/v1beta/openai".to_string()
             });
