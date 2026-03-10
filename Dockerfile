@@ -1,14 +1,22 @@
-# ---- Builder stage ----
-FROM rust:1.82 AS builder
-
+# ---- Chef stage ----
+FROM rust:1.82 AS chef
+RUN cargo install cargo-chef
 WORKDIR /app
 
-# Copy manifests first for dependency caching
-COPY Cargo.toml Cargo.lock ./
-COPY crates/ crates/
-COPY src/ src/
+# ---- Planner stage ----
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-RUN cargo build --release
+# ---- Builder stage ----
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
+# Build dependencies - this is the caching Docker layer!
+RUN cargo chef cook --release --recipe-path recipe.json
+
+# Build application
+COPY . .
+RUN cargo build --release --bin skyclaw
 
 # ---- Runtime stage ----
 FROM debian:bookworm-slim
