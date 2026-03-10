@@ -157,7 +157,7 @@ impl AgentRuntime {
         let mut turn_cost_usd: f64 = 0.0;
 
         // Build user text — include attachment descriptions if no text provided
-        let user_text = match (&msg.text, msg.attachments.is_empty()) {
+        let mut user_text = match (&msg.text, msg.attachments.is_empty()) {
             (Some(t), _) if !t.trim().is_empty() => t.clone(),
             (_, false) => {
                 let descs: Vec<String> = msg
@@ -236,6 +236,27 @@ impl AgentRuntime {
                     );
                 }
             }
+        }
+
+        // ── Vision capability check ──────────────────────────────
+        // If the user sent images but the current model doesn't support
+        // vision, strip the images and prepend a notice so the user gets
+        // a helpful message instead of an API error.
+        if !image_parts.is_empty() && !model_supports_vision(&self.model) {
+            let count = image_parts.len();
+            image_parts.clear();
+            let notice = format!(
+                "[{} image(s) received but your current model ({}) does not support vision. \
+                 Switch to a vision-capable model to analyze images. \
+                 Examples: claude-sonnet-4-6, gpt-5.2, gemini-3-flash-preview, glm-4.6v-flash]",
+                count, self.model
+            );
+            warn!(
+                model = %self.model,
+                images_stripped = count,
+                "Images stripped — model does not support vision"
+            );
+            user_text = format!("{}\n\n{}", notice, user_text);
         }
 
         // Append the user message to session history
@@ -419,9 +440,9 @@ impl AgentRuntime {
             );
 
             // Accumulate per-turn metrics
-            turn_api_calls += 1;
-            turn_input_tokens += response.usage.input_tokens;
-            turn_output_tokens += response.usage.output_tokens;
+            turn_api_calls = turn_api_calls.saturating_add(1);
+            turn_input_tokens = turn_input_tokens.saturating_add(response.usage.input_tokens);
+            turn_output_tokens = turn_output_tokens.saturating_add(response.usage.output_tokens);
             turn_cost_usd += call_cost;
 
             // Separate text content from tool-use content
@@ -480,7 +501,7 @@ impl AgentRuntime {
                         entry_type: skyclaw_core::MemoryEntryType::LongTerm,
                     };
                     if let Err(e) = self.memory.store(entry).await {
-                        debug!(error = %e, "Failed to persist task learning");
+                        warn!(error = %e, "Failed to persist task learning");
                     } else {
                         debug!(
                             task_type = %l.task_type,
@@ -496,7 +517,7 @@ impl AgentRuntime {
                         .update_status(tid, crate::task_queue::TaskStatus::Completed)
                         .await
                     {
-                        debug!(error = %e, "Failed to mark task completed");
+                        warn!(error = %e, "Failed to mark task completed");
                     }
                 }
 
@@ -529,7 +550,7 @@ impl AgentRuntime {
             let mut tool_result_parts: Vec<ContentPart> = Vec::new();
 
             for (tool_use_id, tool_name, arguments) in &tool_uses {
-                turn_tools_used += 1;
+                turn_tools_used = turn_tools_used.saturating_add(1);
                 info!(tool = %tool_name, id = %tool_use_id, "Executing tool call");
 
                 let result = execute_tool(tool_name, arguments.clone(), &self.tools, session).await;
@@ -642,7 +663,7 @@ impl AgentRuntime {
             if let (Some(ref tq), Some(ref tid)) = (&self.task_queue, &task_id) {
                 if let Ok(checkpoint_json) = serde_json::to_string(&session.history) {
                     if let Err(e) = tq.checkpoint(tid, &checkpoint_json).await {
-                        debug!(error = %e, "Failed to checkpoint task — continuing");
+                        warn!(error = %e, "Failed to checkpoint task — continuing");
                     }
                 }
             }
@@ -721,5 +742,111 @@ impl AgentRuntime {
     /// Get the maximum task duration.
     pub fn max_task_duration(&self) -> Duration {
         self.max_task_duration
+    }
+}
+
+/// Check whether a model supports vision (image) inputs.
+///
+/// Returns `true` for models known to accept image content parts,
+/// `false` for models known to be text-only.  Unknown models default
+/// to `true` so we never accidentally strip images from a capable model.
+pub fn model_supports_vision(model: &str) -> bool {
+    let m = model.to_lowercase();
+
+    // ── Known text-only models (deny-list) ──────────────────────
+
+    // Z.ai / Zhipu: only V-suffix models have vision.
+    // glm-4.6v, glm-4.6v-flash, glm-4.6v-flashx, glm-4.5v → vision
+    // glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.5-flash → text-only
+    if m.starts_with("glm-") {
+        return m.contains('v') && !m.starts_with("glm-5");
+    }
+
+    // MiniMax: M2 text-only, M2.5 limited multimodal — not reliable
+    // through OpenAI-compat endpoint. Treat as text-only.
+    if m.starts_with("minimax") {
+        return false;
+    }
+
+    // Legacy OpenAI: GPT-3.5 has no vision support.
+    if m.starts_with("gpt-3") {
+        return false;
+    }
+
+    // ── Known vision-capable families ───────────────────────────
+
+    // Anthropic: all Claude models support vision.
+    // OpenAI: GPT-4o, GPT-4.1, GPT-5.x, o1/o3/o4-mini all support vision.
+    // Gemini: all main models are natively multimodal.
+    // Grok: grok-3, grok-4 support vision; grok-2-vision-* explicitly.
+    // OpenRouter: depends on underlying model — allow by default.
+
+    // Default: allow images through. Most modern models support vision,
+    // and if they don't the provider returns a clear error which is
+    // better than silently stripping images from a capable model.
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Vision capability checks ────────────────────────────────
+
+    #[test]
+    fn vision_anthropic_models() {
+        assert!(model_supports_vision("claude-sonnet-4-6"));
+        assert!(model_supports_vision("claude-opus-4-6"));
+        assert!(model_supports_vision("claude-haiku-4-5"));
+    }
+
+    #[test]
+    fn vision_openai_models() {
+        assert!(model_supports_vision("gpt-5.2"));
+        assert!(model_supports_vision("gpt-4o"));
+        assert!(model_supports_vision("gpt-4.1"));
+        assert!(model_supports_vision("o3-mini"));
+        assert!(!model_supports_vision("gpt-3.5-turbo"));
+    }
+
+    #[test]
+    fn vision_gemini_models() {
+        assert!(model_supports_vision("gemini-3-flash-preview"));
+        assert!(model_supports_vision("gemini-3.1-pro-preview"));
+        assert!(model_supports_vision("gemini-2.5-flash"));
+    }
+
+    #[test]
+    fn vision_grok_models() {
+        assert!(model_supports_vision("grok-4-1-fast-non-reasoning"));
+        assert!(model_supports_vision("grok-3"));
+        assert!(model_supports_vision("grok-2-vision-1212"));
+    }
+
+    #[test]
+    fn vision_zai_models() {
+        // V-suffix models have vision
+        assert!(model_supports_vision("glm-4.6v"));
+        assert!(model_supports_vision("glm-4.6v-flash"));
+        assert!(model_supports_vision("glm-4.6v-flashx"));
+        assert!(model_supports_vision("glm-4.5v"));
+        // Text-only models
+        assert!(!model_supports_vision("glm-4.7-flash"));
+        assert!(!model_supports_vision("glm-4.7"));
+        assert!(!model_supports_vision("glm-5"));
+        assert!(!model_supports_vision("glm-5-code"));
+        assert!(!model_supports_vision("glm-4.5-flash"));
+    }
+
+    #[test]
+    fn vision_minimax_models() {
+        assert!(!model_supports_vision("MiniMax-M2"));
+        assert!(!model_supports_vision("MiniMax-M2.5"));
+        assert!(!model_supports_vision("minimax-m2.5-highspeed"));
+    }
+
+    #[test]
+    fn vision_unknown_defaults_true() {
+        assert!(model_supports_vision("some-future-model"));
     }
 }

@@ -185,7 +185,7 @@ async fn validate_provider_key(
         Err(e) => {
             let err_str = format!("{}", e);
             let err_lower = err_str.to_lowercase();
-            // Auth errors mean the key is invalid — reject
+            // Auth errors or invalid model errors — reject the reload
             if err_lower.contains("401")
                 || err_lower.contains("403")
                 || err_lower.contains("unauthorized")
@@ -193,6 +193,9 @@ async fn validate_provider_key(
                 || err_lower.contains("invalid x-api-key")
                 || err_lower.contains("authentication")
                 || err_lower.contains("permission")
+                || err_lower.contains("404")
+                || err_lower.contains("not_found")
+                || err_lower.contains("model:")
             {
                 Err(err_str)
             } else {
@@ -237,7 +240,7 @@ fn detect_api_key(text: &str) -> Option<DetectedCredential> {
         if p != "http" && p != "https" {
             match p.as_str() {
                 "anthropic" | "openai" | "gemini" | "grok" | "xai" | "openrouter" | "minimax"
-                | "ollama" => {
+                | "zai" | "zhipu" | "ollama" => {
                     if key.len() >= 8 && !is_placeholder_key(key) {
                         return Some(DetectedCredential {
                             provider: match p.as_str() {
@@ -247,6 +250,7 @@ fn detect_api_key(text: &str) -> Option<DetectedCredential> {
                                 "grok" | "xai" => "grok",
                                 "openrouter" => "openrouter",
                                 "minimax" => "minimax",
+                                "zai" | "zhipu" => "zai",
                                 "ollama" => "ollama",
                                 _ => unreachable!(),
                             },
@@ -384,6 +388,7 @@ fn normalize_provider_name(name: &str) -> Option<&'static str> {
         "grok" | "xai" => Some("grok"),
         "openrouter" => Some("openrouter"),
         "minimax" => Some("minimax"),
+        "zai" | "zhipu" | "glm" => Some("zai"),
         "ollama" => Some("ollama"),
         _ => None,
     }
@@ -398,6 +403,7 @@ fn default_model(provider_name: &str) -> &'static str {
         "grok" | "xai" => "grok-4-1-fast-non-reasoning",
         "openrouter" => "anthropic/claude-sonnet-4-6",
         "minimax" => "MiniMax-M2.5",
+        "zai" => "glm-4.7-flash",
         "ollama" => "llama3.3",
         _ => "gemini-2.5-flash-lite",
     }
@@ -661,12 +667,24 @@ fn build_system_prompt() -> String {
     prompt.push_str("\n\nSUPPORTED PROVIDERS & DEFAULT MODELS:\n");
     prompt.push_str("- anthropic: claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-6\n");
     prompt.push_str("- openai: gpt-5.2, gpt-4.1, gpt-4.1-mini, o4-mini\n");
-    prompt.push_str("- gemini: gemini-2.5-flash, gemini-2.5-pro\n");
+    prompt.push_str("- gemini: gemini-3-flash-preview, gemini-3.1-pro-preview, gemini-2.5-flash, gemini-2.5-pro\n");
     prompt.push_str("- grok (xai): grok-4-1-fast-non-reasoning, grok-3\n");
     prompt.push_str(
         "- openrouter: any model via anthropic/claude-sonnet-4-6, openai/gpt-5.2, etc.\n",
     );
+    prompt.push_str("- zai (zhipu): glm-4.7-flash, glm-4.7, glm-5, glm-5-code, glm-4.6v\n");
     prompt.push_str("- minimax: MiniMax-M2.5\n");
+
+    // ── Vision capability ──────────────────────────────────────
+    prompt.push_str(
+        "\nVISION (IMAGE) SUPPORT:\n\
+         Models that can see images: all claude-*, all gpt-4o/gpt-4.1/gpt-5.*, all gemini-*, \
+         grok-3/grok-4, glm-*v* (V-suffix only, e.g. glm-4.6v-flash).\n\
+         Text-only (NO vision): gpt-3.5-turbo, glm-4.7-flash, glm-4.7, glm-5, glm-5-code, \
+         glm-4.5-flash, all MiniMax models.\n\
+         If the user sends an image on a text-only model, images are auto-stripped and \
+         the user is notified. Suggest switching to a vision model.\n",
+    );
 
     // ── Current configuration ─────────────────────────────────
     if let Some(creds) = load_credentials_file() {
@@ -777,6 +795,179 @@ fn list_configured_providers() -> String {
         }
         None => "No providers configured. Use /addkey to add one.".to_string(),
     }
+}
+
+/// Handle the /model command.
+///
+/// - `/model` (no args) → show current model + all available models per provider
+/// - `/model <exact-name>` → switch to that model on the active provider
+fn handle_model_command(args: &str) -> String {
+    let creds = match load_credentials_file() {
+        Some(c) => c,
+        None => return "No providers configured. Use /addkey to add one.".to_string(),
+    };
+
+    if creds.providers.is_empty() {
+        return "No providers configured. Use /addkey to add one.".to_string();
+    }
+
+    // ── No args: show current + available models ──────────────
+    if args.is_empty() {
+        let mut lines = Vec::new();
+
+        // Current model
+        if let Some(active) = creds.providers.iter().find(|p| p.name == creds.active) {
+            lines.push(format!(
+                "Current: {} on {} provider",
+                active.model, active.name
+            ));
+        }
+
+        lines.push(String::new());
+        lines.push("Available models per provider:".to_string());
+        for p in &creds.providers {
+            let models = available_models_for_provider(&p.name);
+            let active_marker = if p.name == creds.active {
+                " (active)"
+            } else {
+                ""
+            };
+            let is_proxy = p.base_url.is_some() || p.name == "openrouter";
+            lines.push(format!("  {}{}:", p.name, active_marker));
+            if is_proxy {
+                let current_vision = if is_vision_model(&p.model) {
+                    " [vision]"
+                } else {
+                    ""
+                };
+                lines.push(format!("    {} ← current{}", p.model, current_vision));
+                lines.push("    (proxy — any model name accepted)".to_string());
+            } else {
+                for m in &models {
+                    let vision = if is_vision_model(m) { " [vision]" } else { "" };
+                    let current = if *m == p.model { " ← current" } else { "" };
+                    lines.push(format!("    {}{}{}", m, vision, current));
+                }
+            }
+        }
+
+        lines.push(String::new());
+        lines.push("Switch model: /model <exact-model-name>".to_string());
+        lines.push("Example: /model claude-sonnet-4-6".to_string());
+        return lines.join("\n");
+    }
+
+    // ── Switch to specific model ──────────────────────────────
+    let target = args.trim();
+
+    // Find active provider
+    let active_provider = match creds.providers.iter().find(|p| p.name == creds.active) {
+        Some(p) => p.clone(),
+        None => return "Active provider not found in credentials.".to_string(),
+    };
+
+    if active_provider.model == target {
+        return format!("Already using {}.", target);
+    }
+
+    // Validate model against known list for the active provider.
+    // Skip validation for proxy/OpenRouter providers (custom base_url) — they accept any model.
+    let is_proxy = active_provider.base_url.is_some() || active_provider.name == "openrouter";
+    let known = available_models_for_provider(&active_provider.name);
+    if !is_proxy && !known.is_empty() && !known.contains(&target) {
+        let list = known
+            .iter()
+            .map(|m| {
+                let v = if is_vision_model(m) { " [vision]" } else { "" };
+                format!("  {}{}", m, v)
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        return format!(
+            "Unknown model '{}' for provider '{}'.\n\nAvailable models:\n{}\n\nUse exact name: /model <model-name>",
+            target, active_provider.name, list
+        );
+    }
+
+    // Update the model in credentials.toml
+    let mut updated = creds.clone();
+    for p in &mut updated.providers {
+        if p.name == creds.active {
+            p.model = target.to_string();
+        }
+    }
+
+    let path = credentials_path();
+    match toml::to_string_pretty(&updated) {
+        Ok(content) => {
+            if let Err(e) = std::fs::write(&path, &content) {
+                return format!("Failed to write credentials: {}", e);
+            }
+            tracing::info!(
+                old_model = %active_provider.model,
+                new_model = %target,
+                "Model switched via /model command"
+            );
+            format!(
+                "Model switched: {} → {}\nHot-reload will apply after this response.",
+                active_provider.model, target
+            )
+        }
+        Err(e) => format!("Failed to serialize credentials: {}", e),
+    }
+}
+
+/// Known models for each provider (used by /model listing).
+fn available_models_for_provider(provider: &str) -> Vec<&'static str> {
+    match provider {
+        "anthropic" => vec!["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
+        "openai" => vec![
+            "gpt-5.2",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4o",
+            "o4-mini",
+            "o3-mini",
+            "gpt-3.5-turbo",
+        ],
+        "gemini" => vec![
+            "gemini-3-flash-preview",
+            "gemini-3.1-pro-preview",
+            "gemini-2.5-flash",
+            "gemini-2.5-pro",
+        ],
+        "grok" | "xai" => vec!["grok-4-1-fast-non-reasoning", "grok-3"],
+        "openrouter" => vec![
+            "anthropic/claude-sonnet-4-6",
+            "openai/gpt-5.2",
+            "google/gemini-3-flash-preview",
+        ],
+        "zai" | "zhipu" => vec![
+            "glm-4.7-flash",
+            "glm-4.7",
+            "glm-5",
+            "glm-5-code",
+            "glm-4.6v",
+            "glm-4.6v-flash",
+        ],
+        "minimax" => vec!["MiniMax-M2.5", "MiniMax-M2.5-highspeed"],
+        _ => vec![],
+    }
+}
+
+/// Quick vision check for /model display (mirrors runtime::model_supports_vision).
+fn is_vision_model(model: &str) -> bool {
+    let m = model.to_lowercase();
+    if m.starts_with("glm-") {
+        return m.contains('v') && !m.starts_with("glm-5");
+    }
+    if m.starts_with("minimax") {
+        return false;
+    }
+    if m.starts_with("gpt-3") {
+        return false;
+    }
+    true
 }
 
 /// Remove a provider from credentials.
@@ -1034,6 +1225,29 @@ fn is_stop_command(text: &str) -> bool {
     false
 }
 
+/// Retry `send_message` up to 3 times with exponential backoff.
+async fn send_with_retry(
+    sender: &dyn skyclaw_core::Channel,
+    reply: skyclaw_core::types::message::OutboundMessage,
+) {
+    let mut attempt = 0u32;
+    let msg = reply;
+    loop {
+        attempt += 1;
+        match sender.send_message(msg.clone()).await {
+            Ok(_) => return,
+            Err(e) => {
+                if attempt >= 3 {
+                    tracing::error!(error = %e, attempt, "Failed to send reply after 3 attempts — message lost");
+                    return;
+                }
+                tracing::warn!(error = %e, attempt, "Failed to send reply, retrying");
+                tokio::time::sleep(std::time::Duration::from_millis(500 * (1 << attempt))).await;
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1046,6 +1260,9 @@ async fn main() -> Result<()> {
         )
         .json()
         .init();
+
+    // Initialize health endpoint uptime clock
+    skyclaw_gateway::health::init_start_time();
 
     // ── Global panic hook — route panics through tracing ─────
     // Without this, panics only write to stderr and are invisible in structured logs.
@@ -1114,7 +1331,9 @@ async fn main() -> Result<()> {
                 let data_dir = dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join(".skyclaw");
-                std::fs::create_dir_all(&data_dir).ok();
+                if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                    tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
+                }
                 format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
             });
             let memory: Arc<dyn skyclaw_core::Memory> = Arc::from(
@@ -1251,16 +1470,19 @@ async fn main() -> Result<()> {
             let (msg_tx, mut msg_rx) =
                 tokio::sync::mpsc::channel::<skyclaw_core::types::message::InboundMessage>(32);
 
+            // Track spawned task handles for graceful shutdown
+            let mut task_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
             // Wire Telegram messages into the unified channel
             if let Some(mut tg_rx) = tg_rx {
                 let tx = msg_tx.clone();
-                tokio::spawn(async move {
+                task_handles.push(tokio::spawn(async move {
                     while let Some(msg) = tg_rx.recv().await {
                         if tx.send(msg).await.is_err() {
                             break;
                         }
                     }
-                });
+                }));
             }
 
             // Wire Discord messages into the unified channel
@@ -1280,7 +1502,9 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join(".skyclaw")
                 .join("workspace");
-            std::fs::create_dir_all(&workspace_path).ok();
+            if let Err(e) = std::fs::create_dir_all(&workspace_path) {
+                tracing::warn!(error = %e, path = %workspace_path.display(), "Failed to create directory");
+            }
 
             // ── Heartbeat ──────────────────────────────────────
             if config.heartbeat.enabled {
@@ -1295,9 +1519,9 @@ async fn main() -> Result<()> {
                     heartbeat_chat_id,
                 );
                 let hb_tx = msg_tx.clone();
-                tokio::spawn(async move {
+                task_handles.push(tokio::spawn(async move {
                     runner.run(hb_tx).await;
-                });
+                }));
                 tracing::info!(
                     interval = %config.heartbeat.interval,
                     checklist = %config.heartbeat.checklist,
@@ -1333,7 +1557,8 @@ async fn main() -> Result<()> {
                 let chat_slots: Arc<Mutex<HashMap<String, ChatSlot>>> =
                     Arc::new(Mutex::new(HashMap::new()));
 
-                tokio::spawn(async move {
+                let msg_tx_redispatch = msg_tx.clone();
+                task_handles.push(tokio::spawn(async move {
                     while let Some(inbound) = msg_rx.recv().await {
                         let chat_id = inbound.chat_id.clone();
                         let is_heartbeat_msg = inbound.channel == "heartbeat";
@@ -1453,6 +1678,11 @@ async fn main() -> Result<()> {
                                     };
 
                                 while let Some(mut msg) = chat_rx.recv().await {
+                                    // Snapshot for outer panic handler (msg is borrowed by async block)
+                                    let panic_chat_id = msg.chat_id.clone();
+                                    let panic_msg_id = msg.id.clone();
+
+                                    let outer_catch_result = AssertUnwindSafe(async {
                                     let is_hb = msg.channel == "heartbeat";
                                     is_heartbeat_clone.store(is_hb, Ordering::Relaxed);
                                     interrupt_clone.store(false, Ordering::Relaxed);
@@ -1486,9 +1716,9 @@ async fn main() -> Result<()> {
                                             reply_to: Some(msg.id.clone()),
                                             parse_mode: None,
                                         };
-                                        let _ = sender.send_message(reply).await;
+                                        send_with_retry(&*sender, reply).await;
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                        continue;
+                                        return;
                                     }
 
                                     // /addkey unsafe — raw key paste mode
@@ -1503,9 +1733,9 @@ async fn main() -> Result<()> {
                                             reply_to: Some(msg.id.clone()),
                                             parse_mode: None,
                                         };
-                                        let _ = sender.send_message(reply).await;
+                                        send_with_retry(&*sender, reply).await;
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                        continue;
+                                        return;
                                     }
 
                                     // /keys — list configured providers
@@ -1517,9 +1747,98 @@ async fn main() -> Result<()> {
                                             reply_to: Some(msg.id.clone()),
                                             parse_mode: None,
                                         };
-                                        let _ = sender.send_message(reply).await;
+                                        send_with_retry(&*sender, reply).await;
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                        continue;
+                                        return;
+                                    }
+
+                                    // /model [model-name] — list or switch models
+                                    if cmd_lower == "/model" || cmd_lower.starts_with("/model ") {
+                                        let args = if cmd_lower == "/model" {
+                                            ""
+                                        } else {
+                                            msg_text_cmd.trim()["/model".len()..].trim()
+                                        };
+                                        let result = handle_model_command(args);
+                                        let is_switch = result.starts_with("Model switched:");
+
+                                        // If model was switched, reload agent immediately
+                                        // (don't wait for file watcher)
+                                        let final_text = if is_switch {
+                                            if let Some(creds) = load_credentials_file() {
+                                                if let Some(prov) = creds.providers.iter().find(|p| p.name == creds.active) {
+                                                    let valid_keys: Vec<String> = prov.keys.iter()
+                                                        .filter(|k| !is_placeholder_key(k))
+                                                        .cloned()
+                                                        .collect();
+                                                    let effective_base_url = prov.base_url.clone().or_else(|| base_url.clone());
+                                                    let reload_config = skyclaw_core::types::config::ProviderConfig {
+                                                        name: Some(creds.active.clone()),
+                                                        api_key: valid_keys.first().cloned(),
+                                                        keys: valid_keys,
+                                                        model: Some(prov.model.clone()),
+                                                        base_url: effective_base_url,
+                                                        extra_headers: std::collections::HashMap::new(),
+                                                    };
+                                                    match validate_provider_key(&reload_config).await {
+                                                        Ok(validated_provider) => {
+                                                            let new_agent = Arc::new(skyclaw_agent::AgentRuntime::with_limits(
+                                                                validated_provider,
+                                                                memory.clone(),
+                                                                tools_template.clone(),
+                                                                prov.model.clone(),
+                                                                Some(build_system_prompt()),
+                                                                max_turns,
+                                                                max_ctx,
+                                                                max_rounds,
+                                                                max_task_duration,
+                                                                max_spend,
+                                                            ));
+                                                            *agent_state.write().await = Some(new_agent);
+                                                            tracing::info!(
+                                                                provider = %creds.active,
+                                                                model = %prov.model,
+                                                                "Agent reloaded via /model command"
+                                                            );
+                                                            format!("{}\nActive now.", result)
+                                                        }
+                                                        Err(err) => {
+                                                            tracing::warn!(error = %err, "Model switch failed validation");
+                                                            // Revert credentials
+                                                            if let Some(old_agent) = agent_state.read().await.as_ref() {
+                                                                let old_model = old_agent.model().to_string();
+                                                                let mut rev = creds.clone();
+                                                                for p in &mut rev.providers {
+                                                                    if p.name == creds.active {
+                                                                        p.model = old_model.clone();
+                                                                    }
+                                                                }
+                                                                if let Ok(content) = toml::to_string_pretty(&rev) {
+                                                                    let _ = std::fs::write(credentials_path(), &content);
+                                                                }
+                                                            }
+                                                            format!("Model switch failed: {}\nReverted to previous model.", err)
+                                                        }
+                                                    }
+                                                } else {
+                                                    result
+                                                }
+                                            } else {
+                                                result
+                                            }
+                                        } else {
+                                            result
+                                        };
+
+                                        let reply = skyclaw_core::types::message::OutboundMessage {
+                                            chat_id: msg.chat_id.clone(),
+                                            text: final_text,
+                                            reply_to: Some(msg.id.clone()),
+                                            parse_mode: None,
+                                        };
+                                        send_with_retry(&*sender, reply).await;
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        return;
                                     }
 
                                     // /removekey <provider>
@@ -1532,7 +1851,7 @@ async fn main() -> Result<()> {
                                             reply_to: Some(msg.id.clone()),
                                             parse_mode: None,
                                         };
-                                        let _ = sender.send_message(reply).await;
+                                        send_with_retry(&*sender, reply).await;
 
                                         // If provider was removed, check if agent needs to go offline
                                         if !provider_arg.is_empty() && load_active_provider_keys().is_none() {
@@ -1541,7 +1860,7 @@ async fn main() -> Result<()> {
                                         }
 
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                        continue;
+                                        return;
                                     }
 
                                     // /usage — show usage summary
@@ -1571,9 +1890,9 @@ async fn main() -> Result<()> {
                                             reply_to: Some(msg.id.clone()),
                                             parse_mode: None,
                                         };
-                                        let _ = sender.send_message(reply).await;
+                                        send_with_retry(&*sender, reply).await;
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
-                                        continue;
+                                        return;
                                     }
 
                                     // enc:v1: — encrypted blob from OTK flow
@@ -1620,7 +1939,7 @@ async fn main() -> Result<()> {
                                                                 reply_to: Some(msg.id.clone()),
                                                                 parse_mode: None,
                                                             };
-                                                            let _ = sender.send_message(reply).await;
+                                                            send_with_retry(&*sender, reply).await;
                                                             tracing::info!(provider = %cred.provider, "OTK key validated — agent online");
                                                         }
                                                         Err(err) => {
@@ -1633,7 +1952,7 @@ async fn main() -> Result<()> {
                                                                 reply_to: Some(msg.id.clone()),
                                                                 parse_mode: None,
                                                             };
-                                                            let _ = sender.send_message(reply).await;
+                                                            send_with_retry(&*sender, reply).await;
                                                         }
                                                     }
                                                 } else {
@@ -1645,7 +1964,7 @@ async fn main() -> Result<()> {
                                                         reply_to: Some(msg.id.clone()),
                                                         parse_mode: None,
                                                     };
-                                                    let _ = sender.send_message(reply).await;
+                                                    send_with_retry(&*sender, reply).await;
                                                 }
                                             }
                                             Err(err) => {
@@ -1655,14 +1974,14 @@ async fn main() -> Result<()> {
                                                     reply_to: Some(msg.id.clone()),
                                                     parse_mode: None,
                                                 };
-                                                let _ = sender.send_message(reply).await;
+                                                send_with_retry(&*sender, reply).await;
                                             }
                                         }
                                         is_heartbeat_clone.store(false, Ordering::Relaxed);
                                         if let Ok(mut pq) = pending_for_worker.lock() {
                                             pq.remove(&worker_chat_id);
                                         }
-                                        continue;
+                                        return;
                                     }
 
                                     // Pending raw key paste (from /addkey unsafe)
@@ -1735,7 +2054,7 @@ async fn main() -> Result<()> {
                                                                 reply_to: Some(msg.id.clone()),
                                                                 parse_mode: None,
                                                             };
-                                                            let _ = sender.send_message(reply).await;
+                                                            send_with_retry(&*sender, reply).await;
                                                             tracing::info!(
                                                                 provider = %name,
                                                                 key_count = key_count,
@@ -1755,7 +2074,7 @@ async fn main() -> Result<()> {
                                                         reply_to: Some(msg.id.clone()),
                                                         parse_mode: None,
                                                     };
-                                                    let _ = sender.send_message(reply).await;
+                                                    send_with_retry(&*sender, reply).await;
                                                     tracing::warn!(
                                                         provider = %cred.provider,
                                                         error = %err,
@@ -1770,7 +2089,7 @@ async fn main() -> Result<()> {
                                             if let Ok(mut pq) = pending_for_worker.lock() {
                                                 pq.remove(&worker_chat_id);
                                             }
-                                            continue;
+                                            return;
                                         }
 
                                         // ── Normal mode: process with agent ────
@@ -1831,9 +2150,7 @@ async fn main() -> Result<()> {
                                         match process_result {
                                             Ok(Ok((mut reply, turn_usage))) => {
                                                 reply.text = censor_secrets(&reply.text);
-                                                if let Err(e) = sender.send_message(reply).await {
-                                                    tracing::error!(error = %e, "Failed to send reply");
-                                                }
+                                                send_with_retry(&*sender, reply).await;
 
                                                 // Record usage
                                                 let record = skyclaw_core::UsageRecord {
@@ -1863,7 +2180,7 @@ async fn main() -> Result<()> {
                                                                 reply_to: None,
                                                                 parse_mode: None,
                                                             };
-                                                            let _ = sender.send_message(usage_msg).await;
+                                                            send_with_retry(&*sender, usage_msg).await;
                                                         }
                                                     }
                                                 }
@@ -1876,7 +2193,7 @@ async fn main() -> Result<()> {
                                                     reply_to: Some(msg.id.clone()),
                                                     parse_mode: None,
                                                 };
-                                                let _ = sender.send_message(error_reply).await;
+                                                send_with_retry(&*sender, error_reply).await;
                                             }
                                             Err(panic_info) => {
                                                 // ── Panic recovered — worker stays alive ────
@@ -1898,7 +2215,7 @@ async fn main() -> Result<()> {
                                                     reply_to: Some(msg.id.clone()),
                                                     parse_mode: None,
                                                 };
-                                                let _ = sender.send_message(error_reply).await;
+                                                send_with_retry(&*sender, error_reply).await;
                                                 // Session history may be corrupted after a panic.
                                                 // Trim the last entry if it was partially added.
                                                 if persistent_history.len() < session.history.len() {
@@ -1986,8 +2303,23 @@ async fn main() -> Result<()> {
                                                             tracing::warn!(
                                                                 provider = %new_name,
                                                                 error = %err,
-                                                                "Hot-reload aborted — new key failed validation, keeping current agent"
+                                                                "Hot-reload aborted — validation failed, reverting model"
                                                             );
+                                                            // Revert credentials.toml to the working model
+                                                            if let Some(mut creds) = load_credentials_file() {
+                                                                for p in &mut creds.providers {
+                                                                    if p.name == new_name {
+                                                                        p.model = current_model.clone();
+                                                                    }
+                                                                }
+                                                                if let Ok(content) = toml::to_string_pretty(&creds) {
+                                                                    let _ = std::fs::write(credentials_path(), &content);
+                                                                    tracing::info!(
+                                                                        model = %current_model,
+                                                                        "Reverted credentials.toml to working model"
+                                                                    );
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -2061,7 +2393,7 @@ async fn main() -> Result<()> {
                                                                 reply_to: Some(msg.id.clone()),
                                                                 parse_mode: None,
                                                             };
-                                                            let _ = sender.send_message(reply).await;
+                                                            send_with_retry(&*sender, reply).await;
                                                             tracing::info!(provider = %provider_name, model = %model, "API key validated — agent online");
                                                         }
                                                         Err(e) => {
@@ -2075,7 +2407,7 @@ async fn main() -> Result<()> {
                                                                 reply_to: Some(msg.id.clone()),
                                                                 parse_mode: None,
                                                             };
-                                                            let _ = sender.send_message(reply).await;
+                                                            send_with_retry(&*sender, reply).await;
                                                             tracing::warn!(provider = %provider_name, error = %e, "API key validation failed");
                                                         }
                                                     }
@@ -2087,7 +2419,7 @@ async fn main() -> Result<()> {
                                                         reply_to: Some(msg.id.clone()),
                                                         parse_mode: None,
                                                     };
-                                                    let _ = sender.send_message(reply).await;
+                                                    send_with_retry(&*sender, reply).await;
                                                 }
                                             }
                                         } else {
@@ -2104,7 +2436,7 @@ async fn main() -> Result<()> {
                                                 reply_to: Some(msg.id.clone()),
                                                 parse_mode: None,
                                             };
-                                            let _ = sender.send_message(reply).await;
+                                            send_with_retry(&*sender, reply).await;
 
                                             // Send format reference as separate message for easy copy-paste
                                             let ref_msg = skyclaw_core::types::message::OutboundMessage {
@@ -2113,7 +2445,7 @@ async fn main() -> Result<()> {
                                                 reply_to: None,
                                                 parse_mode: None,
                                             };
-                                            let _ = sender.send_message(ref_msg).await;
+                                            send_with_retry(&*sender, ref_msg).await;
                                         }
                                     }
 
@@ -2122,6 +2454,44 @@ async fn main() -> Result<()> {
                                     interrupt_clone.store(false, Ordering::Relaxed);
                                     if let Ok(mut pq) = pending_for_worker.lock() {
                                         pq.remove(&worker_chat_id);
+                                    }
+                                    }).catch_unwind().await;
+
+                                    // ── Outer panic safety net ─────────────────
+                                    // If ANYTHING in the loop body panicked
+                                    // (command handling, key detection, session
+                                    // setup, etc.), recover here so the worker
+                                    // loop survives.  The inner catch_unwind on
+                                    // process_message provides more specific
+                                    // recovery with usage tracking; this outer
+                                    // one is a last-resort safety net.
+                                    if let Err(panic_info) = outer_catch_result {
+                                        let panic_msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                                            s.to_string()
+                                        } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                                            s.clone()
+                                        } else {
+                                            "unknown panic".to_string()
+                                        };
+                                        tracing::error!(
+                                            panic = %panic_msg,
+                                            chat_id = %panic_chat_id,
+                                            "Worker panic caught in outer safety net — recovering"
+                                        );
+                                        // Best-effort notification to the user
+                                        let error_reply = skyclaw_core::types::message::OutboundMessage {
+                                            chat_id: panic_chat_id.clone(),
+                                            text: "An internal error occurred. Please try again.".to_string(),
+                                            reply_to: Some(panic_msg_id.clone()),
+                                            parse_mode: None,
+                                        };
+                                        let _ = sender.send_message(error_reply).await;
+                                        // Ensure cleanup in case the panic skipped it
+                                        is_heartbeat_clone.store(false, Ordering::Relaxed);
+                                        interrupt_clone.store(false, Ordering::Relaxed);
+                                        if let Ok(mut pq) = pending_for_worker.lock() {
+                                            pq.remove(&worker_chat_id);
+                                        }
                                     }
                                 }
                             });
@@ -2135,34 +2505,43 @@ async fn main() -> Result<()> {
                         if !is_heartbeat_msg {
                             let tx = slot.tx.clone();
                             drop(slots); // release Mutex guard before await
+                            let inbound_backup = inbound.clone();
                             if let Err(e) = tx.send(inbound).await {
                                 tracing::error!(
                                     chat_id = %chat_id,
                                     error = %e,
-                                    "Chat worker dead — removing slot for respawn on next message"
+                                    "Chat worker dead — removing slot and re-dispatching"
                                 );
                                 let mut slots = chat_slots.lock().await;
                                 slots.remove(&chat_id);
+                                drop(slots); // release lock before re-dispatch
+                                // Re-send through the unified channel so the
+                                // dispatcher loop creates a fresh worker for
+                                // this chat_id — zero messages lost.
+                                if let Err(e2) = msg_tx_redispatch.send(inbound_backup).await {
+                                    tracing::error!(
+                                        chat_id = %chat_id,
+                                        error = %e2,
+                                        "Failed to re-dispatch message after worker death"
+                                    );
+                                }
                             }
                         }
                     }
-                });
+                }));
             }
 
             // ── Start gateway + block ──────────────────────────
-            let is_online = agent_state.read().await.is_some();
-
             println!("SkyClaw gateway starting...");
             println!("  Mode: {}", cli.mode);
 
-            if is_online {
-                let agent = agent_state.read().await.as_ref().unwrap().clone();
+            if let Some(agent) = agent_state.read().await.as_ref().cloned() {
                 let gate = skyclaw_gateway::SkyGate::new(channels, agent, config.gateway.clone());
-                tokio::spawn(async move {
+                task_handles.push(tokio::spawn(async move {
                     if let Err(e) = gate.start().await {
                         tracing::error!(error = %e, "Gateway error");
                     }
-                });
+                }));
                 println!("  Status: Online");
                 println!(
                     "  Gateway: http://{}:{}",
@@ -2176,9 +2555,23 @@ async fn main() -> Result<()> {
                 println!("  Status: Onboarding — send your API key via Telegram");
             }
 
-            // Block until Ctrl+C
+            // Block until Ctrl+C, then drain gracefully
             tokio::signal::ctrl_c().await?;
-            println!("\nSkyClaw shutting down...");
+            println!("\nSkyClaw shutting down gracefully...");
+
+            // Drop the inbound message sender so the dispatcher loop exits
+            // when its receiver sees the channel closed.
+            drop(msg_tx);
+
+            // Wait for spawned tasks with a timeout
+            let drain_timeout = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                futures::future::join_all(task_handles),
+            );
+            match drain_timeout.await {
+                Ok(_) => println!("All tasks drained cleanly."),
+                Err(_) => println!("Drain timeout — forcing exit."),
+            }
         }
         Commands::Chat => {
             println!("SkyClaw interactive chat");
@@ -2212,7 +2605,9 @@ async fn main() -> Result<()> {
                 let data_dir = dirs::home_dir()
                     .unwrap_or_else(|| std::path::PathBuf::from("."))
                     .join(".skyclaw");
-                std::fs::create_dir_all(&data_dir).ok();
+                if let Err(e) = std::fs::create_dir_all(&data_dir) {
+                    tracing::warn!(error = %e, path = %data_dir.display(), "Failed to create directory");
+                }
                 format!("sqlite:{}/memory.db?mode=rwc", data_dir.display())
             });
             let memory: Arc<dyn skyclaw_core::Memory> = Arc::from(
@@ -2224,7 +2619,9 @@ async fn main() -> Result<()> {
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join(".skyclaw")
                 .join("workspace");
-            std::fs::create_dir_all(&workspace).ok();
+            if let Err(e) = std::fs::create_dir_all(&workspace) {
+                tracing::warn!(error = %e, path = %workspace.display(), "Failed to create directory");
+            }
             let mut cli_channel = skyclaw_channels::CliChannel::new(workspace.clone());
             let cli_rx = cli_channel.take_receiver();
             cli_channel.start().await?;
@@ -2325,7 +2722,10 @@ async fn main() -> Result<()> {
             println!("---\n");
 
             // ── Message loop ───────────────────────────────────
-            let mut rx = cli_rx.expect("CLI channel receiver must be available");
+            let Some(mut rx) = cli_rx else {
+                eprintln!("CLI channel receiver unavailable");
+                return Ok(());
+            };
             // ── Restore CLI conversation history from memory backend ──
             let cli_history_key = "chat_history:cli".to_string();
             let mut history: Vec<skyclaw_core::types::message::ChatMessage> =
@@ -2760,6 +3160,24 @@ mod tests {
     }
 
     #[test]
+    fn explicit_zai_key() {
+        let result =
+            detect_api_key("zai:24f7a8ebaa2f4cb1866b82b0670a5e6c.rPGt3alOjwddy4l1").unwrap();
+        assert_eq!(result.provider, "zai");
+        assert_eq!(
+            result.api_key,
+            "24f7a8ebaa2f4cb1866b82b0670a5e6c.rPGt3alOjwddy4l1"
+        );
+    }
+
+    #[test]
+    fn explicit_zhipu_key() {
+        let result =
+            detect_api_key("zhipu:24f7a8ebaa2f4cb1866b82b0670a5e6c.rPGt3alOjwddy4l1").unwrap();
+        assert_eq!(result.provider, "zai");
+    }
+
+    #[test]
     fn explicit_format_case_insensitive() {
         let result = detect_api_key("MiniMax:eyJhbGciOiJSUzI1NiIsInR5cCI6");
         assert_eq!(result.unwrap().provider, "minimax");
@@ -2839,11 +3257,12 @@ mod tests {
     fn default_models_all_providers() {
         assert_eq!(default_model("anthropic"), "claude-sonnet-4-6");
         assert_eq!(default_model("openai"), "gpt-5.2");
-        assert_eq!(default_model("gemini"), "gemini-2.5-flash");
+        assert_eq!(default_model("gemini"), "gemini-2.5-flash-lite");
         assert_eq!(default_model("grok"), "grok-4-1-fast-non-reasoning");
         assert_eq!(default_model("xai"), "grok-4-1-fast-non-reasoning");
         assert_eq!(default_model("openrouter"), "anthropic/claude-sonnet-4-6");
         assert_eq!(default_model("minimax"), "MiniMax-M2.5");
+        assert_eq!(default_model("zai"), "glm-4.7-flash");
         assert_eq!(default_model("ollama"), "llama3.3");
     }
 
@@ -3185,7 +3604,7 @@ mod tests {
              model = \"claude-sonnet-4-6\"\n",
             test_key
         );
-        std::fs::write(&path, &creds_content).unwrap();
+        std::fs::write(&path, &creds_content).expect("test: write credential file");
 
         let text = format!("Your API key is {} and it works great!", test_key);
         let censored = censor_secrets(&text);
@@ -3201,7 +3620,7 @@ mod tests {
 
         // Restore
         match backup {
-            Some(content) => std::fs::write(&path, content).unwrap(),
+            Some(content) => std::fs::write(&path, content).expect("test: restore credential file"),
             None => {
                 std::fs::remove_file(&path).ok();
             }
