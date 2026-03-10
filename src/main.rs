@@ -1117,6 +1117,7 @@ async fn main() -> Result<()> {
             // ── Telegram channel ───────────────────────────────
             let mut channels: Vec<Arc<dyn skyclaw_core::Channel>> = Vec::new();
             let mut primary_channel: Option<Arc<dyn skyclaw_core::Channel>> = None;
+            #[allow(unused_mut)]
             let mut tg_rx: Option<
                 tokio::sync::mpsc::Receiver<skyclaw_core::types::message::InboundMessage>,
             > = None;
