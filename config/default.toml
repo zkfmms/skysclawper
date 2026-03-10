@@ -58,7 +58,14 @@ otel_enabled = false
 
 # Telegram channel — set your bot token here or via TELEGRAM_BOT_TOKEN env var
 [channel.telegram]
-enabled = true
+enabled = false
 token = "${TELEGRAM_BOT_TOKEN}"
+allowlist = []
+file_transfer = true
+
+# Discord channel — set your bot token here or via DISCORD_BOT_TOKEN env var
+[channel.discord]
+enabled = true
+token = "${DISCORD_BOT_TOKEN}"
 allowlist = []
 file_transfer = true

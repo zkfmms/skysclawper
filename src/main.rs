@@ -1121,6 +1121,7 @@ async fn main() -> Result<()> {
                 tokio::sync::mpsc::Receiver<skyclaw_core::types::message::InboundMessage>,
             > = None;
 
+            #[cfg(feature = "telegram")]
             if let Some(tg_config) = config.channel.get("telegram") {
                 if tg_config.enabled {
                     let mut tg = skyclaw_channels::TelegramChannel::new(tg_config)?;
@@ -1130,6 +1131,27 @@ async fn main() -> Result<()> {
                     channels.push(tg_arc.clone());
                     primary_channel = Some(tg_arc.clone());
                     tracing::info!("Telegram channel started");
+                }
+            }
+
+            // ── Discord channel ────────────────────────────────
+            let mut discord_rx: Option<
+                tokio::sync::mpsc::Receiver<skyclaw_core::types::message::InboundMessage>,
+            > = None;
+
+            #[cfg(feature = "discord")]
+            if let Some(discord_config) = config.channel.get("discord") {
+                if discord_config.enabled {
+                    let mut discord = skyclaw_channels::DiscordChannel::new(discord_config)?;
+                    discord.start().await?;
+                    discord_rx = discord.take_receiver();
+                    let discord_arc: Arc<dyn skyclaw_core::Channel> = Arc::new(discord);
+                    channels.push(discord_arc.clone());
+                    
+                    if primary_channel.is_none() {
+                        primary_channel = Some(discord_arc.clone());
+                    }
+                    tracing::info!("Discord channel started");
                 }
             }
 
@@ -1225,6 +1247,18 @@ async fn main() -> Result<()> {
                 let tx = msg_tx.clone();
                 tokio::spawn(async move {
                     while let Some(msg) = tg_rx.recv().await {
+                        if tx.send(msg).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+
+            // Wire Discord messages into the unified channel
+            if let Some(mut discord_rx) = discord_rx {
+                let tx = msg_tx.clone();
+                tokio::spawn(async move {
+                    while let Some(msg) = discord_rx.recv().await {
                         if tx.send(msg).await.is_err() {
                             break;
                         }

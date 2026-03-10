@@ -155,7 +155,7 @@ chrono.workspace = true
 futures.workspace = true
 
 [features]
-default = ["telegram", "browser"]
+default = ["discord", "browser"]
 telegram = ["skyclaw-channels/telegram"]
 discord = ["skyclaw-channels/discord"]
 slack = ["skyclaw-channels/slack"]
