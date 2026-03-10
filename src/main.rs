@@ -1087,7 +1087,7 @@ async fn main() -> Result<()> {
                             .provider
                             .name
                             .clone()
-                            .unwrap_or_else(|| "anthropic".to_string());
+                            .unwrap_or_else(|| "google".to_string());
                         let model = config
                             .provider
                             .model
