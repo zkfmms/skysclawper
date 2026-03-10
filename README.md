@@ -107,4 +107,4 @@ Use the [skysclawper-workspace](https://github.com/rosenthal/skysclawper-workspa
 
 Inherits **MIT License** from SkyClaw and Nab.
 
-> *Header art by User. Concept based on SkyClaw by zkfmms & Nab by MikkoParkkola.*
+> *Header art by User. Concept based on SkyClaw by nagisanzenin & Nab by MikkoParkkola.*
