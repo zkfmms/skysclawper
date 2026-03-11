@@ -28,6 +28,7 @@ rust-version = "1.82"
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
 futures = "0.3"
+nab = "0.4"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -155,7 +156,7 @@ chrono.workspace = true
 futures.workspace = true
 
 [features]
-default = ["discord", "browser"]
+default = ["discord"]
 telegram = ["skyclaw-channels/telegram"]
 discord = ["skyclaw-channels/discord"]
 slack = ["skyclaw-channels/slack"]

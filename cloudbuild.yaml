@@ -10,6 +10,7 @@ steps:
 
   # 2. Build the 'chef' stage (base environment)
   - name: 'gcr.io/cloud-builders/docker'
+    env: ['DOCKER_BUILDKIT=1']
     args: [
       'build',
       '--target', 'chef',
@@ -20,6 +21,7 @@ steps:
 
   # 3. Build the final 'builder' stage using cache from both images
   - name: 'gcr.io/cloud-builders/docker'
+    env: ['DOCKER_BUILDKIT=1']
     args: [
       'build',
       '-t', 'gcr.io/$PROJECT_ID/skyclaw-builder:latest',
@@ -45,7 +47,14 @@ steps:
       - |
         docker create --name extractor gcr.io/$PROJECT_ID/skyclaw-builder:latest
         docker cp extractor:/app/target/aarch64-unknown-linux-gnu/release/skyclaw ./skyclaw
-        docker cp extractor:/usr/local/cargo/bin/nab ./nab
+        # Try both common cargo bin locations for nab
+        if docker cp extractor:/usr/local/cargo/bin/nab ./nab; then
+          echo "nab copied from /usr/local/cargo/bin"
+        elif docker cp extractor:/root/.cargo/bin/nab ./nab; then
+          echo "nab copied from /root/.cargo/bin"
+        else
+          echo "WARNING: nab binary not found in image; continuing without nab"
+        fi
         docker rm extractor
 
 # Save the binary to GCS

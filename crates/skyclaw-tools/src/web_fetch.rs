@@ -80,7 +80,10 @@ impl Tool for WebFetchTool {
     fn description(&self) -> &str {
         "Fetch the content of a web page or API endpoint via HTTP GET. \
          Returns the response body as text. Use this to look up documentation, \
-         check APIs, fetch data, or research information on the web."
+         check APIs, fetch data, or research information on the web. \
+         NOTE: This tool is synchronous and blocks until the fetch is complete. \
+         You will receive the result immediately in the same turn. \
+         Do NOT claim to be processing in the background."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -145,6 +148,27 @@ impl Tool for WebFetchTool {
         }
 
         if Self::should_use_nab(&input) {
+            // Prefer in-process library if available; fallback to binary
+            if let Ok(client) = nab::AcceleratedClient::new() {
+                let mut body = match client.fetch_text(url).await {
+                    Ok(text) => text,
+                    Err(e) => {
+                        return Ok(ToolOutput {
+                            content: format!("nab fetch failed: {}", e),
+                            is_error: true,
+                        })
+                    }
+                };
+                if body.len() > MAX_RESPONSE_SIZE {
+                    body.truncate(MAX_RESPONSE_SIZE);
+                    body.push_str("\n... [response truncated]");
+                }
+                return Ok(ToolOutput {
+                    content: body,
+                    is_error: false,
+                });
+            }
+
             let mut cmd = std::process::Command::new(Self::nab_binary());
             cmd.arg("fetch").arg(url);
 
