@@ -1,6 +1,6 @@
 # ---- Chef stage (Base environment) ----
 # Pinned to rust:1.93 digest to ensure cache stability
-FROM rust:1.93 AS chef
+FROM rust@sha256:ecbe59a8408895edd02d9ef422504b8501dd9fa1526de27a45b73406d734d659 AS chef
 RUN cargo install --locked cargo-chef --version 0.1.68
 WORKDIR /app
 
