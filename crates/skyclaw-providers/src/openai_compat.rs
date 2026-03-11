@@ -315,9 +315,11 @@ fn convert_message_to_openai(msg: &ChatMessage) -> Result<serde_json::Value, Sky
                             "tool_call_id": tool_use_id,
                             "content": content,
                         });
-                        if let Some(n) = name {
-                            msg.as_object_mut().unwrap().insert("name".to_string(), serde_json::json!(n));
-                        }
+                        // Gemini requires a non-empty name for tool results.
+                        // If name is missing or empty, use a placeholder to avoid 400 Bad Request.
+                        let effective_name = name.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or("unknown_tool");
+                        msg.as_object_mut().unwrap().insert("name".to_string(), serde_json::json!(effective_name));
+
                         tool_messages.push(msg);
                     }
                 }
@@ -902,6 +904,38 @@ mod tests {
         assert_eq!(json["role"], "tool");
         assert_eq!(json["tool_call_id"], "call_1");
         assert_eq!(json["content"], "file.txt");
+    }
+
+    #[test]
+    fn convert_tool_result_message_empty_name() {
+        let msg = ChatMessage {
+            role: Role::Tool,
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: "call_2".to_string(),
+                content: "res".to_string(),
+                is_error: false,
+                name: Some("".to_string()),
+            }]),
+        };
+        let json = convert_message_to_openai(&msg).unwrap();
+        assert_eq!(json["role"], "tool");
+        assert_eq!(json["name"], "unknown_tool");
+    }
+
+    #[test]
+    fn convert_tool_result_message_missing_name() {
+        let msg = ChatMessage {
+            role: Role::Tool,
+            content: MessageContent::Parts(vec![ContentPart::ToolResult {
+                tool_use_id: "call_3".to_string(),
+                content: "res".to_string(),
+                is_error: false,
+                name: None,
+            }]),
+        };
+        let json = convert_message_to_openai(&msg).unwrap();
+        assert_eq!(json["role"], "tool");
+        assert_eq!(json["name"], "unknown_tool");
     }
 
     #[test]
