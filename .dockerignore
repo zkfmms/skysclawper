@@ -1,16 +1,44 @@
-target/
+# Mac
+.DS_Store
+**/.DS_Store
+
+# Git
 .git/
-.env
-*.key
-*.pem
+.gitignore
+
+# Build Artifacts
+target/
 *.log
+*.tmp
 skyclaw_binary
 skyclaw_bin
-skysclawper_src/
-assets/
+skyclaw_binary.zip
+
+# Docs & Meta
+*.md
+LICENSE
 docs/
+assets/
 infrastructure/
 .claude/
 .github/
 deploy/
+plan.md
+FEATURES.md
+VISION.md
+SKYCLAW_ROADMAP.md
+DEV_PROTOCOL.md
+AGENTIC_DEVELOPER_PROTOCOL.md
+CLAUDE.md
+
+# Configs & Scripts (not needed for build)
+.env
+.env.*
+cloudbuild.yaml
+docker-compose.yml
+Makefile
+skyclaw.toml
+skysclawper_src/
 test_ecosia_nab.py
+*.key
+*.pem
