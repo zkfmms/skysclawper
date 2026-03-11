@@ -1,6 +1,6 @@
 # ---- Chef stage (Base environment) ----
 # Pinned to rust:1.93 digest to ensure cache stability
-FROM rust:1.85 AS chef
+FROM rust:1.93 AS chef
 RUN cargo install --locked cargo-chef --version 0.1.68
 WORKDIR /app
 
@@ -28,9 +28,13 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --target aarch64-unknown-linux-gnu --recipe-path recipe.json
 
+# Pre-install nab binary for deployment (Cached unless version changes)
+RUN cargo install nab --version 0.4.0 --target aarch64-unknown-linux-gnu
+
 # Build application
 COPY . .
 RUN cargo build --release --target aarch64-unknown-linux-gnu --bin skyclaw
 
 # ---- Export stage ----
 RUN ls -la target/aarch64-unknown-linux-gnu/release/skyclaw
+RUN ls -la /usr/local/cargo/bin/nab

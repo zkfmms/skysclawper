@@ -1,23 +1,43 @@
 steps:
-  # 1. Pull the previous image for caching
+  # 1. Pull previous images for caching (both base chef and builder)
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
-    args: ['-c', 'docker pull gcr.io/$PROJECT_ID/skyclaw-builder:latest || exit 0']
+    args:
+      - '-c'
+      - |
+        docker pull gcr.io/$PROJECT_ID/skyclaw-chef:latest || exit 0
+        docker pull gcr.io/$PROJECT_ID/skyclaw-builder:latest || exit 0
 
-  # 2. Build the image using cargo-chef cache
+  # 2. Build the 'chef' stage (base environment)
+  - name: 'gcr.io/cloud-builders/docker'
+    args: [
+      'build',
+      '--target', 'chef',
+      '-t', 'gcr.io/$PROJECT_ID/skyclaw-chef:latest',
+      '--cache-from', 'gcr.io/$PROJECT_ID/skyclaw-chef:latest',
+      '.'
+    ]
+
+  # 3. Build the final 'builder' stage using cache from both images
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'build',
       '-t', 'gcr.io/$PROJECT_ID/skyclaw-builder:latest',
+      '--cache-from', 'gcr.io/$PROJECT_ID/skyclaw-chef:latest',
       '--cache-from', 'gcr.io/$PROJECT_ID/skyclaw-builder:latest',
       '.'
     ]
 
-  # 3. Push the image back to registry for future caching
+  # 4. Push images back to registry for future caching
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/skyclaw-builder:latest']
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        docker push gcr.io/$PROJECT_ID/skyclaw-chef:latest
+        docker push gcr.io/$PROJECT_ID/skyclaw-builder:latest
 
-  # 4. Extract the binary from the image
+  # 5. Extract the binary from the image
   - name: 'gcr.io/cloud-builders/docker'
     entrypoint: 'bash'
     args:
@@ -25,13 +45,14 @@ steps:
       - |
         docker create --name extractor gcr.io/$PROJECT_ID/skyclaw-builder:latest
         docker cp extractor:/app/target/aarch64-unknown-linux-gnu/release/skyclaw ./skyclaw
+        docker cp extractor:/usr/local/cargo/bin/nab ./nab
         docker rm extractor
 
 # Save the binary to GCS
 artifacts:
   objects:
     location: 'gs://${PROJECT_ID}-skyclaw-builds/${BUILD_ID}'
-    paths: ['skyclaw']
+    paths: ['skyclaw', 'nab']
 
 options:
   machineType: 'E2_HIGHCPU_8'
