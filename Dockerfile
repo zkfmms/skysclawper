@@ -1,7 +1,19 @@
-# ---- Chef stage ----
-FROM rust:1.82 AS chef
-RUN cargo install cargo-chef
+# ---- Chef stage (Base environment) ----
+FROM rust:latest AS chef
+RUN cargo install --locked cargo-chef --version 0.1.68
 WORKDIR /app
+
+# Install cross-compilation tools for aarch64 (Cached layer)
+RUN apt-get update && apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+
+# Add the target (Cached layer)
+RUN rustup target add aarch64-unknown-linux-gnu
+
+# Configure environment for cross-compilation
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc \
+    CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc \
+    CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++ \
+    SQLX_OFFLINE=true
 
 # ---- Planner stage ----
 FROM chef AS planner
@@ -10,31 +22,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 
 # ---- Builder stage ----
 FROM chef AS builder
+
+# Cook dependencies (This is the critical cached layer!)
 COPY --from=planner /app/recipe.json recipe.json
-# Build dependencies - this is the caching Docker layer!
-RUN cargo chef cook --release --recipe-path recipe.json
+RUN cargo chef cook --release --target aarch64-unknown-linux-gnu --recipe-path recipe.json
 
 # Build application
 COPY . .
-RUN cargo build --release --bin skyclaw
+RUN cargo build --release --target aarch64-unknown-linux-gnu --bin skyclaw
 
-# ---- Runtime stage ----
-FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        chromium \
-    && rm -rf /var/lib/apt/lists/*
-
-# chromiumoxide looks for "chromium" or "chromium-browser" on PATH
-ENV CHROME_PATH=/usr/bin/chromium
-
-WORKDIR /app
-
-COPY --from=builder /app/target/release/skyclaw ./skyclaw
-
-ENV TELEGRAM_BOT_TOKEN=""
-
-EXPOSE 8080
-
-ENTRYPOINT ["./skyclaw", "start"]
+# ---- Export stage ----
+RUN ls -la target/aarch64-unknown-linux-gnu/release/skyclaw

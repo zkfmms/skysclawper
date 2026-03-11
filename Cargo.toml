@@ -42,7 +42,7 @@ tower = "0.5"
 tower-http = { version = "0.6", features = ["cors", "trace"] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "postgres"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "postgres"] }
 
 # Messaging
 teloxide = { version = "0.17", features = ["macros"] }
