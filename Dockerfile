@@ -5,7 +5,7 @@ RUN cargo install --locked cargo-chef --version 0.1.68
 WORKDIR /app
 
 # Install cross-compilation tools for aarch64 (Cached layer)
-RUN apt-get update && apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+RUN apt-get update && apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross clang libclang-dev
 
 # Add the target (Cached layer)
 RUN rustup target add aarch64-unknown-linux-gnu
